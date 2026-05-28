@@ -544,8 +544,6 @@ def search_course_materials_keyword(
         if len(term.strip()) > 3
     ]
 
-    # Suomenkielistä demoa varten lisätään joitakin hyödyllisiä käsitteitä,
-    # jos käyttäjän syöte liittyy yleisesti opinnäytetyöhön.
     general_terms = [
         "tutkimuskysymys",
         "aineisto",
@@ -555,7 +553,11 @@ def search_course_materials_keyword(
         "arviointi",
         "kriteeri",
         "eettinen",
-        "luotettavuus"
+        "luotettavuus",
+        "opinnäytetyö",
+        "tutkimussuunnitelma",
+        "kirjoittaminen",
+        "rajaus"
     ]
 
     for term in general_terms:

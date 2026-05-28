@@ -92,13 +92,6 @@ def file_hash_from_bytes(data: bytes) -> str:
 
 
 def read_uploaded_file(uploaded_file):
-    """
-    Palauttaa:
-        filename: str
-        file_hash: str
-        text: str
-    """
-
     filename = uploaded_file.name
     data = uploaded_file.getvalue()
     file_hash = file_hash_from_bytes(data)
@@ -151,11 +144,6 @@ def format_recent_history(user_id: str, limit: int = 10) -> str:
 
 
 def get_relevant_course_context(user_id: str, user_input: str) -> str:
-    """
-    Hakee ensin osumia kurssimateriaaleista avainsanoilla.
-    Jos osumia ei löydy, palauttaa yleisen kurssikontekstin.
-    """
-
     retrieved = search_course_materials_keyword(
         user_id=user_id,
         query=user_input,
@@ -255,23 +243,177 @@ def load_user_state(user_id: str):
 
 def agent_label(agent_name: str) -> str:
     labels = {
-        "integrity": "akateeminen rehellisyys",
-        "planner": "suunnittelu",
-        "writing_coach": "kirjoituspalaute",
-        "criteria_alignment": "kriteerivastaavuus",
-        "research_design": "tutkimusasetelma",
-        "reflection": "reflektio ja itsesäätely",
-        "weekly_plan": "viikkosuunnitelma",
-        "supervision_summary": "ohjausmuistio"
+        "orchestrator": "Työnkulun ohjaaja",
+        "integrity": "Rehellisyysvahti",
+        "planner": "Etenemisluotsi",
+        "writing_coach": "Tekstiluotsi",
+        "criteria_alignment": "Kriteeriluotsi",
+        "research_design": "Tutkimusluotsi",
+        "reflection": "Reflektiokumppani",
+        "weekly_plan": "Viikkovalmentaja",
+        "supervision_summary": "Ohjaustapaamisen valmistelija",
+        "finalizer": "Vastauskoostaja"
     }
 
     return labels.get(agent_name, agent_name)
+
+
+def agent_description(agent_name: str) -> str:
+    descriptions = {
+        "orchestrator": (
+            "Analysoi opiskelijan pyynnön ja valitsee, mitä erikoisagentteja tarvitaan."
+        ),
+        "integrity": (
+            "Tarkistaa, että tuki pysyy akateemisen rehellisyyden rajoissa eikä työkalu "
+            "tee opinnäytetyötä opiskelijan puolesta."
+        ),
+        "planner": (
+            "Jäsentää opiskelijan tilanteen, seuraavat konkreettiset askeleet, aikataulun "
+            "ja ohjaajalle vietävät kysymykset."
+        ),
+        "writing_coach": (
+            "Antaa formatiivista palautetta tekstin selkeydestä, rakenteesta, argumentaatiosta "
+            "ja akateemisesta tyylistä."
+        ),
+        "criteria_alignment": (
+            "Vertaa opiskelijan suunnitelmaa tai tekstiä annettuihin kurssimateriaaleihin, "
+            "tavoitteisiin ja arviointikriteereihin."
+        ),
+        "research_design": (
+            "Arvioi tutkimuskysymyksen, aineiston, menetelmän, analyysin ja rajauksen "
+            "yhteensopivuutta."
+        ),
+        "reflection": (
+            "Tukee opiskelijan itsesäätelyä, etenemisen arviointia ja seuraavan pienen "
+            "askeleen valintaa."
+        ),
+        "weekly_plan": (
+            "Laatii realistisen seitsemän päivän etenemissuunnitelman."
+        ),
+        "supervision_summary": (
+            "Koostaa opiskelijan tarkistettavan muistion ohjaustapaamista varten."
+        ),
+        "finalizer": (
+            "Yhdistää erikoisagenttien havainnot yhdeksi opiskelijalle selkeäksi vastaukseksi."
+        )
+    }
+
+    return descriptions.get(agent_name, "")
 
 
 def run_workflow(task_type: str, user_input: str, user_id: str, mode: str):
     recent_history = format_recent_history(user_id, limit=8)
     checkins = load_checkins(user_id, limit=5)
     course_context = get_relevant_course_context(user_id, user_input)
+    course_context_used = bool(course_context and course_context.strip())
+
+    if course_context_used:
+        st.success("Kurssimateriaalia käytetään tämän vastauksen tukena.")
+    else:
+        st.info(
+            "Kurssimateriaalia ei löytynyt tähän pyyntöön. "
+            "Vastaus perustuu profiiliin, keskusteluhistoriaan ja yleiseen ohjaukselliseen tukeen."
+        )
+
+    progress_placeholder = st.empty()
+    progress_events = []
+    selected_agent_names = []
+    agent_output_previews = []
+
+    def render_progress():
+        with progress_placeholder.container():
+            st.markdown("### Agenttinen työnkulku")
+
+            st.markdown(
+                "Tämä vastaus muodostetaan useassa vaiheessa:\n\n"
+                "1. **Työnkulun ohjaaja** analysoi opiskelijan pyynnön.\n"
+                "2. Työnkulun ohjaaja valitsee tarvittavat **erikoisagentit**.\n"
+                "3. Erikoisagentit tarkastelevat tilannetta eri näkökulmista.\n"
+                "4. **Vastauskoostaja** yhdistää tulokset opiskelijalle suunnatuksi vastaukseksi."
+            )
+
+            if selected_agent_names:
+                st.markdown("#### Valitut agentit")
+
+                for agent_name in selected_agent_names:
+                    st.markdown(
+                        "- **"
+                        + agent_label(agent_name)
+                        + "**: "
+                        + agent_description(agent_name)
+                    )
+
+            st.markdown("#### Eteneminen")
+
+            for item in progress_events:
+                st.markdown(item)
+
+            if agent_output_previews:
+                with st.expander("Näytä agenttien lyhyet välitulokset", expanded=False):
+                    st.markdown(
+                        "Nämä ovat tiivistettyjä välituloksia. Lopullinen opiskelijalle tarkoitettu "
+                        "vastaus muodostetaan niiden perusteella erikseen."
+                    )
+
+                    for preview in agent_output_previews:
+                        st.markdown(preview)
+
+    def progress_callback(update: dict):
+        event = update.get("event")
+        agent_name = update.get("agent")
+        label = agent_label(agent_name) if agent_name else update.get("label", "Agentti")
+        message = update.get("message", "")
+
+        if event == "workflow_start":
+            progress_events.append("🟦 Työnkulku käynnistyi.")
+
+        elif event == "orchestrator_start":
+            progress_events.append("⏳ **Työnkulun ohjaaja** analysoi pyynnön.")
+
+        elif event == "route_complete":
+            data = update.get("data") or {}
+            agents = data.get("selected_agents", [])
+
+            selected_agent_names.clear()
+            selected_agent_names.extend(agents)
+
+            progress_events.append("✅ **Työnkulun ohjaaja valitsi tarvittavat agentit.**")
+
+        elif event == "agent_start":
+            progress_events.append("⏳ **" + label + "** käsittelee pyyntöä.")
+
+        elif event == "agent_complete":
+            progress_events.append("✅ **" + label + "** valmis.")
+
+            data = update.get("data") or {}
+            output_preview = data.get("output_preview")
+
+            if output_preview:
+                short_preview = output_preview[:500]
+
+                agent_output_previews.append(
+                    "#### "
+                    + label
+                    + "\n\n"
+                    + short_preview
+                    + "\n\n"
+                )
+
+        elif event == "finalizer_start":
+            progress_events.append("⏳ **Vastauskoostaja** muodostaa lopullisen vastauksen.")
+
+        elif event == "finalizer_complete":
+            progress_events.append("✅ **Vastauskoostaja** valmis.")
+
+        elif event == "workflow_complete":
+            progress_events.append("🟩 **Agenttinen työnkulku valmis.**")
+
+        elif message:
+            progress_events.append("ℹ️ " + message)
+
+        render_progress()
+
+    render_progress()
 
     result = run_agentic_workflow(
         task_type=task_type,
@@ -279,7 +421,8 @@ def run_workflow(task_type: str, user_input: str, user_id: str, mode: str):
         profile=st.session_state.get("profile", {}),
         course_context=course_context,
         recent_history=recent_history,
-        checkins=checkins
+        checkins=checkins,
+        progress_callback=progress_callback
     )
 
     selected_agents = [
@@ -293,9 +436,12 @@ def run_workflow(task_type: str, user_input: str, user_id: str, mode: str):
     save_message(user_id, "user", user_input, mode=mode)
     save_message(user_id, "assistant", result["final_response"], mode=mode)
 
+    st.markdown("---")
+    st.markdown("## Lopullinen vastaus")
+    
     st.markdown(result["final_response"])
 
-    with st.expander("Agenttisen työnkulun tekniset tiedot"):
+    with st.expander("Lisätiedot: agenttien tekniset välitulokset", expanded=False):
         st.markdown(format_workflow_debug(result))
 
     return result
@@ -331,41 +477,37 @@ def add_demo_profile(user_id: str):
 
 
 def add_demo_course_material(user_id: str):
-    demo_material = """
-OPINNÄYTETYÖN TAVOITTEET JA ARVIOINTIKRITEERIT
-
-Hyvä opinnäytetyö:
-- esittää selkeän ja rajatun tutkimuskysymyksen,
-- perustelee aiheen merkityksen aiemman tutkimuksen avulla,
-- valitsee tutkimuskysymykseen sopivan aineiston ja menetelmän,
-- kuvaa aineistonkeruun ja analyysin läpinäkyvästi,
-- noudattaa hyvää tieteellistä käytäntöä,
-- arvioi tutkimuksen luotettavuutta ja eettisiä kysymyksiä,
-- rakentaa johdonmukaisen argumentin,
-- käyttää lähteitä asianmukaisesti.
-
-Tutkimussuunnitelmassa tulisi kuvata:
-- tutkimuksen aihe ja tausta,
-- alustava tutkimuskysymys,
-- aineisto tai tutkimusmateriaali,
-- menetelmä ja analyysitapa,
-- alustava aikataulu,
-- mahdolliset eettiset kysymykset,
-- seuraavat päätökset, joista tarvitaan ohjaajan palautetta.
-
-Ohjaustapaamiseen valmistautuminen:
-- tiivistä eteneminen lyhyesti,
-- nimeä 1–3 konkreettista ongelmaa,
-- ehdota vaihtoehtoja, joista tarvitset palautetta,
-- kerro, mikä päätös pitäisi tehdä seuraavaksi.
-
-Akateemisen kirjoittamisen näkökulmasta tekstin tulisi:
-- edetä loogisesti,
-- erottaa tutkimuksen tausta, tavoite, aineisto, menetelmä ja analyysi,
-- perustella väitteet lähteillä,
-- välttää liian yleisiä väitteitä,
-- käyttää täsmällisiä käsitteitä.
-"""
+    demo_material = (
+        "OPINNÄYTETYÖN TAVOITTEET JA ARVIOINTIKRITEERIT\n\n"
+        "Hyvä opinnäytetyö:\n"
+        "- esittää selkeän ja rajatun tutkimuskysymyksen,\n"
+        "- perustelee aiheen merkityksen aiemman tutkimuksen avulla,\n"
+        "- valitsee tutkimuskysymykseen sopivan aineiston ja menetelmän,\n"
+        "- kuvaa aineistonkeruun ja analyysin läpinäkyvästi,\n"
+        "- noudattaa hyvää tieteellistä käytäntöä,\n"
+        "- arvioi tutkimuksen luotettavuutta ja eettisiä kysymyksiä,\n"
+        "- rakentaa johdonmukaisen argumentin,\n"
+        "- käyttää lähteitä asianmukaisesti.\n\n"
+        "Tutkimussuunnitelmassa tulisi kuvata:\n"
+        "- tutkimuksen aihe ja tausta,\n"
+        "- alustava tutkimuskysymys,\n"
+        "- aineisto tai tutkimusmateriaali,\n"
+        "- menetelmä ja analyysitapa,\n"
+        "- alustava aikataulu,\n"
+        "- mahdolliset eettiset kysymykset,\n"
+        "- seuraavat päätökset, joista tarvitaan ohjaajan palautetta.\n\n"
+        "Ohjaustapaamiseen valmistautuminen:\n"
+        "- tiivistä eteneminen lyhyesti,\n"
+        "- nimeä 1–3 konkreettista ongelmaa,\n"
+        "- ehdota vaihtoehtoja, joista tarvitset palautetta,\n"
+        "- kerro, mikä päätös pitäisi tehdä seuraavaksi.\n\n"
+        "Akateemisen kirjoittamisen näkökulmasta tekstin tulisi:\n"
+        "- edetä loogisesti,\n"
+        "- erottaa tutkimuksen tausta, tavoite, aineisto, menetelmä ja analyysi,\n"
+        "- perustella väitteet lähteillä,\n"
+        "- välttää liian yleisiä väitteitä,\n"
+        "- käyttää täsmällisiä käsitteitä.\n"
+    )
 
     save_course_material(
         user_id=user_id,
@@ -377,38 +519,59 @@ Akateemisen kirjoittamisen näkökulmasta tekstin tulisi:
     st.session_state.course_context = load_course_context(user_id)
 
 
+def reset_demo_user(user_id: str):
+    delete_user_data(user_id)
+    ensure_user(user_id)
+    add_demo_profile(user_id)
+    add_demo_course_material(user_id)
+    st.session_state.profile = load_profile(user_id)
+    st.session_state.course_context = load_course_context(user_id)
+
+
 # ============================================================
-# Otsikko ja demoa tukevat kuvausosiot
+# Otsikko ja kuvaus
 # ============================================================
 
 st.title("Agenttinen tekoäly opinnäytetyön tueksi")
 
 st.caption(
-    "Pilvipohjainen Streamlit-prototyyppi, jossa orkestroija-agentti ja erikoistuneet agentit "
+    "Pilvipohjainen Streamlit-prototyyppi, jossa työnkulun ohjaaja ja erikoistuneet agentit "
     "tukevat suunnittelua, kirjoittamista, tutkimusasetelmaa, reflektiota ja ohjaukseen valmistautumista."
 )
 
-with st.expander("Mikä tämä prototyyppi on?", expanded=True):
-    st.markdown("""
-Tämä prototyyppi on **agenttinen opinnäytetyövalmentaja** korkeakouluopiskelijoille.
+with st.expander("Demo kolmessa vaiheessa", expanded=True):
+    st.markdown(
+        "**Nopea demopolku:**\n\n"
+        "1. Valitse sivupalkista **Täytä demoprofiili** ja **Lisää demokurssimateriaali**.\n"
+        "2. Avaa välilehti **Ennakoiva valmentaja** ja paina **Käytä demotilannetta**.\n"
+        "3. Paina **Pyydä ennakoivaa valmennusta** ja seuraa, miten agenttinen työnkulku etenee.\n\n"
+        "Demon tarkoitus on näyttää, miten eri agentit tarkastelevat opiskelijan tilannetta eri näkökulmista "
+        "ja miten lopullinen opiskelijalle suunnattu vastaus koostetaan."
+    )
 
-Sen tarkoitus on tukea opiskelijaa:
-- opinnäytetyöprosessin suunnittelussa,
-- tutkimuskysymyksen ja tutkimusasetelman jäsentämisessä,
-- tekstiluonnosten formatiivisessa palautteessa,
-- viikoittaisessa etenemisen seurannassa,
-- ohjaustapaamisiin valmistautumisessa.
+with st.expander("Mikä tämä prototyyppi on?", expanded=False):
+    st.markdown(
+        "Tämä prototyyppi on **agenttinen opinnäytetyövalmentaja** korkeakouluopiskelijoille.\n\n"
+        "Sen tarkoitus on tukea opiskelijaa:\n"
+        "- opinnäytetyöprosessin suunnittelussa,\n"
+        "- tutkimuskysymyksen ja tutkimusasetelman jäsentämisessä,\n"
+        "- tekstiluonnosten formatiivisessa palautteessa,\n"
+        "- viikoittaisessa etenemisen seurannassa,\n"
+        "- ohjaustapaamisiin valmistautumisessa.\n\n"
+        "**Agenttisuus tarkoittaa tässä**, että yksi vastaus muodostuu usean erikoistuneen agentin yhteistyönä.\n\n"
+        "**Rajaus:** työkalu ei kirjoita opinnäytetyötä opiskelijan puolesta eikä korvaa ohjaajaa."
+    )
 
-**Agenttisuus tarkoittaa tässä**, että yksi vastaus muodostuu usean erikoistuneen agentin yhteistyönä:
-- orkestroija valitsee tarvittavat agentit,
-- kirjoitusagentti arvioi tekstiä,
-- tutkimusasetelma-agentti arvioi menetelmän ja rajauksen suhdetta,
-- kriteeriagentti vertaa tuotosta annettuihin kurssimateriaaleihin,
-- reflektioagentti tukee opiskelijan itsesäätelyä,
-- lopullinen vastaus koostetaan opiskelijalle ymmärrettävään muotoon.
-
-**Rajaus:** työkalu ei kirjoita opinnäytetyötä opiskelijan puolesta eikä korvaa ohjaajaa.
-""")
+with st.expander("Pedagoginen lähtökohta", expanded=False):
+    st.markdown(
+        "Työkalu tukee opiskelijan **itsesäätelyä, suunnittelua ja ohjaukseen valmistautumista**.\n\n"
+        "Se ei pyri korvaamaan ohjaajaa eikä kirjoita opinnäytetyötä opiskelijan puolesta. "
+        "Sen tehtävä on auttaa opiskelijaa:\n"
+        "- jäsentämään omaa tilannettaan,\n"
+        "- tunnistamaan seuraavat konkreettiset askeleet,\n"
+        "- muotoilemaan parempia kysymyksiä ohjaajalle,\n"
+        "- tarkastelemaan työtään suhteessa annettuihin tavoitteisiin ja kriteereihin."
+    )
 
 with st.expander("Tietosuoja ja tarkoituksenmukainen käyttö", expanded=False):
     st.markdown(
@@ -432,39 +595,25 @@ with st.expander("Tietosuoja ja tarkoituksenmukainen käyttö", expanded=False):
         "tekoälyn käyttöä koskevat ohjeet, hankintakäytännöt ja organisaation sisäiset linjaukset."
     )
 
-with st.expander("Tunnetut rajoitukset", expanded=False):
-    st.markdown("""
-- Prototyyppi ei korvaa opinnäytetyön ohjaajaa.
-- Kurssimateriaalien haku on vielä avainsanapohjainen, ei semanttinen.
-- Malli voi tehdä virheitä tai antaa liian yleisiä suosituksia.
-- Prototyyppi ei sovellu arkaluonteisen tai tunnistettavan tutkimusaineiston käsittelyyn.
-- Käyttöönotto oikeilla opiskelijoilla edellyttää tietosuoja- ja tekoälyohjeiden tarkistamista.
-- Opiskelijan tulee itse arvioida ja muokata kaikki tuotokset ennen käyttöä.
-""")
-
-with st.expander("Miten tätä voisi arvioida pilotissa?", expanded=False):
-    st.markdown("""
-Mahdollisia arviointikohteita:
-- kokevatko opiskelijat saavansa apua opinnäytetyön suunnitteluun,
-- tarkentuvatko tutkimuskysymykset ja seuraavat askeleet,
-- valmistautuvatko opiskelijat paremmin ohjaustapaamisiin,
-- väheneekö ohjaajalle tulevien yleisten prosessikysymysten määrä,
-- säilyykö akateeminen rehellisyys,
-- perustuuko palaute annettuihin kurssimateriaaleihin,
-- millaisia virheitä tai liian vahvoja suosituksia järjestelmä tuottaa.
-""")
-
 
 # ============================================================
-# Sivupalkki: käyttäjä
+# Sivupalkki
 # ============================================================
 
 st.sidebar.header("Käyttäjä")
 
+st.sidebar.warning(
+    "DEMOVERSIO — älä syötä oikeita henkilötietoja, opiskelijanumeroita "
+    "tai luottamuksellista tutkimusaineistoa."
+)
+
 user_id = st.sidebar.text_input(
     "Pseudonyymi käyttäjätunnus",
     value=st.session_state.get("loaded_user_id", "demo-opiskelija"),
-    help="Käytä pseudonyymiä tunnusta. Vältä oikeita nimiä, opiskelijanumeroita ja arkaluonteisia tunnisteita."
+    help=(
+        "Käytä esimerkiksi tunnusta 'demo-opiskelija-1'. "
+        "Älä käytä oikeaa nimeä, opiskelijanumeroa tai muuta tunnistetta."
+    )
 ).strip()
 
 if not user_id:
@@ -477,11 +626,6 @@ if st.session_state.get("loaded_user_id") != user_id:
 if st.sidebar.button("Lataa käyttäjän tiedot uudelleen"):
     load_user_state(user_id)
     st.sidebar.success("Tiedot ladattu.")
-
-
-# ============================================================
-# Sivupalkki: järjestelmän tila
-# ============================================================
 
 with st.sidebar.expander("Järjestelmän tila", expanded=False):
     health = database_health_check()
@@ -500,11 +644,6 @@ st.sidebar.write("Viestit:", summary["message_count"])
 st.sidebar.write("Kurssimateriaalit:", summary["material_count"])
 st.sidebar.write("Viikkokatsaukset:", summary["checkin_count"])
 
-
-# ============================================================
-# Sivupalkki: demopainikkeet
-# ============================================================
-
 st.sidebar.markdown("---")
 st.sidebar.header("Demo")
 
@@ -516,6 +655,11 @@ if st.sidebar.button("Täytä demoprofiili"):
 if st.sidebar.button("Lisää demokurssimateriaali"):
     add_demo_course_material(user_id)
     st.sidebar.success("Demokurssimateriaali lisätty.")
+    st.rerun()
+
+if st.sidebar.button("Nollaa demo"):
+    reset_demo_user(user_id)
+    st.sidebar.success("Demo nollattu ja demotiedot luotu uudelleen.")
     st.rerun()
 
 
@@ -610,11 +754,6 @@ with st.sidebar.expander("Materiaalikontekstin esikatselu", expanded=False):
 st.sidebar.markdown("---")
 st.sidebar.header("Tietojen poisto")
 
-st.sidebar.warning(
-    "Prototyyppi. Älä lataa luottamuksellista tutkimusaineistoa, henkilötietoja, "
-    "opiskelijanumeroita tai tunnistettavia osallistujatietoja."
-)
-
 confirm_delete = st.sidebar.checkbox("Ymmärrän, että poisto on pysyvä")
 
 if st.sidebar.button("Poista kaikki tietoni"):
@@ -645,7 +784,7 @@ if alerts:
 # Välilehdet
 # ============================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "1. Opinnäytetyön profiili",
     "2. Ennakoiva valmentaja",
     "3. Tekstipalaute",
@@ -653,7 +792,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "5. Viikkokatsaus",
     "6. Viikkosuunnitelma",
     "7. Ohjaukseen valmistautuminen",
-    "8. Historia"
+    "8. Ohjaajan kooste",
+    "9. Historia"
 ])
 
 
@@ -799,25 +939,25 @@ with tab2:
     st.header("Ennakoiva opinnäytetyövalmentaja")
 
     st.write(
-        "Kuvaa tilannettasi, niin orkestroija-agentti valitsee sopivat erikoisagentit "
+        "Kuvaa tilannettasi, niin Työnkulun ohjaaja valitsee sopivat erikoisagentit "
         "ja muodostaa sinulle seuraavat askeleet."
     )
 
-    if "coach_input_demo" not in st.session_state:
-        st.session_state.coach_input_demo = ""
+    if "coach_input_area" not in st.session_state:
+        st.session_state.coach_input_area = ""
 
     if st.button("Käytä demotilannetta", key="demo_coach_input"):
-        st.session_state.coach_input_demo = (
+        st.session_state.coach_input_area = (
             "Minulla on aihe ja alustava tutkimuskysymys, mutta en ole varma, "
             "onko tutkimuskysymys liian laaja. Ohjaustapaaminen on ensi viikolla, "
-            "ja haluaisin tietää, mitä minun kannattaa valmistella ennen tapaamista."
+            "ja haluaisin tietää, mitä minun kannattaa valmistella ennen tapaamista. "
+            "Tavoitteeni on saada selkeämpi rajaus ja päättää, mitä kysymyksiä esitän ohjaajalle."
         )
 
     coach_input = st.text_area(
         "Kuvaa tämänhetkinen tilanteesi",
-        value=st.session_state.coach_input_demo,
-        height=180,
-        key="coach_input_area"
+        key="coach_input_area",
+        height=180
     )
 
     if st.button("Pyydä ennakoivaa valmennusta"):
@@ -826,7 +966,7 @@ with tab2:
         elif not coach_input.strip():
             st.warning("Kuvaa ensin tilanteesi.")
         else:
-            with st.spinner("Orkestroija valitsee agentit ja koostaa palautteen. Tämä voi kestää hetken..."):
+            with st.spinner("Työnkulun ohjaaja valitsee agentit ja koostaa palautteen. Tämä voi kestää hetken..."):
                 run_workflow("proactive_coach", coach_input, user_id, "proactive_coach")
 
 
@@ -842,29 +982,30 @@ with tab3:
         "Agentit antavat formatiivista palautetta kirjoittamatta tekstiä puolestasi."
     )
 
-    if "draft_text_demo" not in st.session_state:
-        st.session_state.draft_text_demo = ""
+    if "draft_text_area" not in st.session_state:
+        st.session_state.draft_text_area = ""
 
     if st.button("Käytä demotekstiä", key="demo_draft_input"):
-        st.session_state.draft_text_demo = (
+        st.session_state.draft_text_area = (
             "Tässä tutkielmassa tarkastelen tekoälyn käyttöä opiskelussa. "
             "Tekoäly on nykyään tärkeä aihe, ja monet opiskelijat käyttävät sitä. "
             "Tutkimukseni selvittää, miten tekoäly vaikuttaa opiskelijoihin. "
-            "Aineisto kerätään haastatteluilla ja analysoidaan jotenkin laadullisesti."
+            "Aineisto kerätään haastatteluilla ja analysoidaan jotenkin laadullisesti. "
+            "Tutkimuksen tavoitteena on ymmärtää opiskelijoiden kokemuksia ja sitä, "
+            "miten tekoäly voi auttaa opinnäytetyöprosessissa."
         )
 
     draft_text = st.text_area(
         "Liitä teksti tähän",
-        value=st.session_state.draft_text_demo,
-        height=320,
-        key="draft_text_area"
+        key="draft_text_area",
+        height=320
     )
 
     if st.button("Anna palautetta tekstistä"):
         if not draft_text.strip():
             st.warning("Liitä ensin tekstiä.")
         else:
-            with st.spinner("Kirjoitus-, kriteeri- ja rehellisyysagentit työskentelevät..."):
+            with st.spinner("Tekstiluotsi, Kriteeriluotsi ja Rehellisyysvahti työskentelevät..."):
                 run_workflow("draft_feedback", draft_text, user_id, "draft_feedback")
 
 
@@ -875,30 +1016,30 @@ with tab3:
 with tab4:
     st.header("Tutkimusasetelman tuki")
 
-    if "design_input_demo" not in st.session_state:
-        st.session_state.design_input_demo = ""
+    if "design_input_area" not in st.session_state:
+        st.session_state.design_input_area = ""
 
     if st.button("Käytä demotutkimusasetelmaa", key="demo_design_input"):
-        st.session_state.design_input_demo = (
+        st.session_state.design_input_area = (
             "Tutkimuskysymykseni on: Miten opiskelijat käyttävät tekoälyä opinnäytetyön tekemisessä? "
-            "Ajattelen kerätä aineiston 5–6 opiskelijan haastatteluilla. "
-            "Menetelmänä voisi olla laadullinen haastattelututkimus ja analyysina temaattinen analyysi. "
-            "En ole vielä varma, pitäisikö rajata aihe kirjoittamisen suunnitteluun, tekstipalautteeseen "
-            "vai koko opinnäytetyöprosessiin."
+            "Ajattelen kerätä aineiston 5–6 opiskelijan puolistrukturoiduilla haastatteluilla. "
+            "Menetelmänä olisi laadullinen haastattelututkimus ja analyysitapana temaattinen analyysi. "
+            "En ole vielä varma, pitäisikö aihe rajata opinnäytetyön suunnitteluun, tekstipalautteen hyödyntämiseen "
+            "vai koko opinnäytetyöprosessiin. Haluaisin arvioida, onko tutkimuskysymys liian laaja ja "
+            "onko aineisto suhteessa tavoitteeseen riittävä."
         )
 
     design_input = st.text_area(
         "Kuvaa tutkimuskysymys, aineisto, menetelmä ja suunniteltu analyysi",
-        value=st.session_state.design_input_demo,
-        height=280,
-        key="design_input_area"
+        key="design_input_area",
+        height=280
     )
 
     if st.button("Analysoi tutkimusasetelma"):
         if not design_input.strip():
             st.warning("Kuvaa ensin tutkimusasetelmasi.")
         else:
-            with st.spinner("Tutkimusasetelma-agentit työskentelevät..."):
+            with st.spinner("Tutkimusluotsi ja Kriteeriluotsi työskentelevät..."):
                 run_workflow("research_design", design_input, user_id, "research_design")
 
 
@@ -909,44 +1050,58 @@ with tab4:
 with tab5:
     st.header("Viikoittainen tilannekatsaus")
 
-    completed = st.text_area("Mitä sait tällä viikolla valmiiksi?", height=100)
-    blocked = st.text_area("Mikä estää etenemistä?", height=100)
-    next_action = st.text_area("Mitä aiot tehdä seuraavaksi?", height=100)
-    support_needed = st.text_area("Millaista tukea tarvitset?", height=100)
+    if "weekly_completed" not in st.session_state:
+        st.session_state.weekly_completed = ""
+
+    if "weekly_blocked" not in st.session_state:
+        st.session_state.weekly_blocked = ""
+
+    if "weekly_next_action" not in st.session_state:
+        st.session_state.weekly_next_action = ""
+
+    if "weekly_support_needed" not in st.session_state:
+        st.session_state.weekly_support_needed = ""
 
     if st.button("Täytä demoviikkokatsaus", key="demo_weekly_checkin"):
-        completed_demo = "Tarkensin aihetta ja luin kolme aiheeseen liittyvää artikkelia."
-        blocked_demo = "En ole varma, miten rajaan tutkimuskysymyksen riittävän kapeaksi."
-        next_action_demo = "Haluan laatia kaksi vaihtoehtoista tutkimuskysymystä ohjaajalle."
-        support_demo = "Tarvitsen apua rajauksen ja seuraavien konkreettisten tehtävien määrittelyssä."
-
-        checkin_text = (
-            "Valmistui tällä viikolla:\n"
-            + completed_demo
-            + "\n\nEsteet:\n"
-            + blocked_demo
-            + "\n\nSeuraava suunniteltu teko:\n"
-            + next_action_demo
-            + "\n\nTarvittava tuki:\n"
-            + support_demo
+        st.session_state.weekly_completed = (
+            "Tarkensin aihetta ja luin kolme aiheeseen liittyvää artikkelia. "
+            "Kirjoitin myös alustavan version tutkimuksen taustasta."
+        )
+        st.session_state.weekly_blocked = (
+            "En ole varma, miten rajaan tutkimuskysymyksen riittävän kapeaksi. "
+            "Lisäksi en tiedä, pitäisikö haastatteluissa keskittyä koko opinnäytetyöprosessiin "
+            "vai vain kirjoittamisen tukeen."
+        )
+        st.session_state.weekly_next_action = (
+            "Haluan laatia kaksi vaihtoehtoista tutkimuskysymystä ja valmistella ne ohjaustapaamiseen."
+        )
+        st.session_state.weekly_support_needed = (
+            "Tarvitsen apua rajauksen, seuraavien konkreettisten tehtävien ja ohjaajalle esitettävien kysymysten määrittelyssä."
         )
 
-        with st.spinner("Viikkokatsausagentit työskentelevät..."):
-            result = run_workflow(
-                "weekly_checkin",
-                checkin_text,
-                user_id,
-                "weekly_checkin"
-            )
+    completed = st.text_area(
+        "Mitä sait tällä viikolla valmiiksi?",
+        key="weekly_completed",
+        height=100
+    )
 
-        save_checkin(
-            user_id=user_id,
-            completed=completed_demo,
-            blocked=blocked_demo,
-            next_action=next_action_demo,
-            support_needed=support_demo,
-            coach_response=result["final_response"]
-        )
+    blocked = st.text_area(
+        "Mikä estää etenemistä?",
+        key="weekly_blocked",
+        height=100
+    )
+
+    next_action = st.text_area(
+        "Mitä aiot tehdä seuraavaksi?",
+        key="weekly_next_action",
+        height=100
+    )
+
+    support_needed = st.text_area(
+        "Millaista tukea tarvitset?",
+        key="weekly_support_needed",
+        height=100
+    )
 
     if st.button("Luo viikkovalmentajan vastaus"):
         if not any([
@@ -968,7 +1123,7 @@ with tab5:
                 + support_needed
             )
 
-            with st.spinner("Viikkokatsausagentit työskentelevät..."):
+            with st.spinner("Etenemisluotsi ja Reflektiokumppani työskentelevät..."):
                 result = run_workflow(
                     "weekly_checkin",
                     checkin_text,
@@ -1022,21 +1177,21 @@ with tab6:
         "viikkokatsaustesi ja kurssimateriaalien perusteella."
     )
 
-    if "weekly_input_demo" not in st.session_state:
-        st.session_state.weekly_input_demo = ""
+    if "weekly_input_area" not in st.session_state:
+        st.session_state.weekly_input_area = ""
 
     if st.button("Käytä demopyyntöä viikkosuunnitelmaan", key="demo_weekly_plan"):
-        st.session_state.weekly_input_demo = (
+        st.session_state.weekly_input_area = (
             "Minulla on tällä viikolla noin 8 tuntia aikaa. "
-            "Haluan valmistella ohjaustapaamista varten tutkimuskysymyksen rajauksen "
-            "ja alustavan menetelmäkuvauksen."
+            "Haluan valmistella ohjaustapaamista varten tutkimuskysymyksen rajauksen, "
+            "kaksi vaihtoehtoista tutkimuskysymystä ja alustavan menetelmäkuvauksen. "
+            "Tarvitsen suunnitelman, jossa työ jakautuu realistisesti useammalle päivälle."
         )
 
     weekly_input = st.text_area(
         "Valinnainen tarkennus suunnitelmalle",
-        value=st.session_state.weekly_input_demo,
-        height=160,
-        key="weekly_input_area"
+        key="weekly_input_area",
+        height=160
     )
 
     if st.button("Luo 7 päivän suunnitelma"):
@@ -1051,7 +1206,7 @@ with tab6:
                     "aikatauluni ja aiempien viikkokatsausten perusteella."
                 )
 
-            with st.spinner("Viikkosuunnitelma-agentit työskentelevät..."):
+            with st.spinner("Viikkovalmentaja työskentelee..."):
                 run_workflow("weekly_plan", user_input, user_id, "weekly_plan")
 
 
@@ -1066,21 +1221,22 @@ with tab7:
         "Luo tiivis muistio ohjaustapaamista varten. Tarkista ja muokkaa muistio ennen jakamista."
     )
 
-    if "supervision_input_demo" not in st.session_state:
-        st.session_state.supervision_input_demo = ""
+    if "supervision_input_area" not in st.session_state:
+        st.session_state.supervision_input_area = ""
 
     if st.button("Käytä demo-ohjaustilannetta", key="demo_supervision_input"):
-        st.session_state.supervision_input_demo = (
+        st.session_state.supervision_input_area = (
             "Haluan keskustella ohjaajan kanssa siitä, onko tutkimuskysymykseni liian laaja, "
             "riittääkö 5–6 haastattelua aineistoksi ja kannattaako analyysitavaksi valita temaattinen analyysi. "
-            "Tarvitsen myös päätöksen siitä, mitä teen seuraavaksi ennen tutkimussuunnitelman palautusta."
+            "Lisäksi tarvitsen päätöksen siitä, pitäisikö tutkimuksen keskittyä tekoälyn käyttöön koko opinnäytetyöprosessissa "
+            "vai rajatummin kirjoittamisen suunnitteluun ja tekstipalautteeseen. "
+            "Haluan lähteä tapaamisesta selkeän seuraavan viikon tehtävälistan kanssa."
         )
 
     supervision_input = st.text_area(
         "Kuvaa, mitä haluat käsitellä ohjaajan kanssa",
-        value=st.session_state.supervision_input_demo,
-        height=180,
-        key="supervision_input_area"
+        key="supervision_input_area",
+        height=180
     )
 
     if st.button("Luo ohjaustapaamisen muistio"):
@@ -1095,7 +1251,7 @@ with tab7:
                     "ja seuraavien päätösten perusteella."
                 )
 
-            with st.spinner("Ohjaukseen valmistautumisen agentit työskentelevät..."):
+            with st.spinner("Ohjaustapaamisen valmistelija työskentelee..."):
                 run_workflow(
                     "supervision_summary",
                     user_input,
@@ -1105,10 +1261,59 @@ with tab7:
 
 
 # ============================================================
-# Tab 8: historia
+# Tab 8: ohjaajan kooste
 # ============================================================
 
 with tab8:
+    st.header("Ohjaajan kooste")
+
+    st.write(
+        "Tämä näkymä tuottaa opiskelijan itse tarkistettavan koosteen ohjaajalle. "
+        "Koostetta ei tule jakaa automaattisesti, vaan opiskelijan tulee tarkistaa ja muokata se ensin."
+    )
+
+    if "supervisor_summary_area" not in st.session_state:
+        st.session_state.supervisor_summary_area = ""
+
+    if st.button("Käytä demopyyntöä ohjaajan koosteeseen", key="demo_supervisor_summary"):
+        st.session_state.supervisor_summary_area = (
+            "Haluan tiivistää ohjaajalle nykyisen tilanteeni, tutkimuskysymyksen rajauksen ongelman, "
+            "aineiston riittävyyteen liittyvän epävarmuuden sekä päätökset, joita tarvitsen seuraavaksi."
+        )
+
+    supervisor_summary_input = st.text_area(
+        "Mitä haluat nostaa ohjaajalle?",
+        key="supervisor_summary_area",
+        height=160
+    )
+
+    if st.button("Luo ohjaajan kooste"):
+        if not st.session_state.get("profile"):
+            st.warning("Tallenna ensin opinnäytetyön profiili.")
+        else:
+            if supervisor_summary_input.strip():
+                user_input = supervisor_summary_input.strip()
+            else:
+                user_input = (
+                    "Laadi opiskelijan tarkistettava kooste ohjaajalle. "
+                    "Keskity nykyiseen vaiheeseen, etenemiseen, esteisiin, tarvittaviin päätöksiin "
+                    "ja kysymyksiin ohjaajalle. Älä sisällytä tarpeettomia henkilötietoja."
+                )
+
+            with st.spinner("Ohjaajan koostetta muodostetaan..."):
+                run_workflow(
+                    "supervision_summary",
+                    user_input,
+                    user_id,
+                    "supervisor_summary"
+                )
+
+
+# ============================================================
+# Tab 9: historia
+# ============================================================
+
+with tab9:
     st.header("Tallennettu keskusteluhistoria")
 
     limit = st.slider("Näytettävien viestien määrä", 5, 100, 30)

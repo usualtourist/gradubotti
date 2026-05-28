@@ -2,7 +2,8 @@ import os
 import json
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -104,7 +105,7 @@ def call_llm(
         )
 
     language_instruction = (
-        "\n\nKieliohje:\n"
+        "\n\nKieliohje ja toimintarajat:\n"
         "- Vastaa aina suomeksi.\n"
         "- Käytä selkeää, akateemista ja opiskelijaa tukevaa suomen kieltä.\n"
         "- Ole konkreettinen ja käytännöllinen.\n"
@@ -143,15 +144,130 @@ def agent_outputs_text(outputs: Dict[str, str]) -> str:
     parts = []
 
     for name, output in outputs.items():
+        label = AGENTS.get(name, {}).get("label", name)
         parts.append(
-            "\n\n--- AGENTIN "
-            + str(name).upper()
-            + " TUOTOS ---\n"
+            "\n\n--- "
+            + str(label).upper()
+            + " ---\n"
             + str(output)
         )
 
     return "\n".join(parts)
 
+
+# ============================================================
+# Agenttimääritykset
+# ============================================================
+
+AGENTS = {
+    "integrity": {
+        "label": "Rehellisyysvahti",
+        "tier": "fast",
+        "temperature": 0.1,
+        "system": (
+            "Olet Rehellisyysvahti. Tarkistat, että opiskelijan saama tuki pysyy "
+            "akateemisen rehellisyyden, tutkimuseettisyyden ja turvallisen tekoälyn käytön rajoissa. "
+            "Arvioi erityisesti haamukirjoittamisen, plagioinnin, keksittyjen lähteiden, keksityn aineiston, "
+            "epäeettisen tutkimuksen, liian vahvojen väitteiden, ohjaajan päätöksenteon korvaamisen "
+            "ja luottamuksellisen tiedon käsittelyn riskit. "
+            "Älä anna yleistä tutkimussuunnittelun palautetta, ellei se liity akateemiseen rehellisyyteen, "
+            "tutkimuseettisyyteen tai turvalliseen käyttöön. "
+            "Anna vastauksesi tällä rakenteella: "
+            "1. Akateemisen rehellisyyden riski: matala / keskitaso / korkea. "
+            "2. Perustelu: miksi riski on tällä tasolla. "
+            "3. Mahdollinen pedagoginen tai tutkimusprosessin huomio, jos se liittyy turvalliseen käyttöön. "
+            "4. Turvallinen tukitapa. "
+            "5. Mitä opiskelijan kannattaa varmistaa ohjaajalta. "
+            "Vastaa enintään viidellä lyhyellä kohdalla."
+        ),
+    },
+    "planner": {
+        "label": "Etenemisluotsi",
+        "tier": "fast",
+        "temperature": 0.3,
+        "system": (
+            "Olet Etenemisluotsi. Jäsennät opiskelijan tilanteen, seuraavat konkreettiset askeleet, "
+            "realistisen aikataulun ja ohjaajalle vietävät kysymykset. "
+            "Keskity etenemiseen ja päätöksentekoon. "
+            "Älä käsittele akateemisen rehellisyyden kysymyksiä, ellei se ole välttämätöntä. "
+            "Vastaa tiiviisti. Anna enintään kolme seuraavaa askelta, yksi tärkein riski ja 2–3 kysymystä ohjaajalle."
+        ),
+    },
+    "writing_coach": {
+        "label": "Tekstiluotsi",
+        "tier": "strong",
+        "temperature": 0.3,
+        "system": (
+            "Olet Tekstiluotsi. Annat formatiivista palautetta tekstin selkeydestä, rakenteesta, "
+            "johdonmukaisuudesta, argumentaatiosta, akateemisesta tyylistä, käsitteiden käytöstä "
+            "ja evidenssin tarpeesta. "
+            "Älä kirjoita kokonaisia kappaleita opiskelijan puolesta. "
+            "Voit antaa lyhyitä havainnollistavia esimerkkejä, mutta opiskelijan tulee säilyä tekstin tekijänä. "
+            "Vastaa tiiviisti. Anna enintään kolme vahvuutta, kolme kehityskohdetta ja yksi seuraava kirjoitustehtävä."
+        ),
+    },
+    "criteria_alignment": {
+        "label": "Kriteeriluotsi",
+        "tier": "strong",
+        "temperature": 0.2,
+        "system": (
+            "Olet Kriteeriluotsi. Vertaat opiskelijan suunnitelmaa, tekstiä tai tilannetta annettuihin "
+            "kurssimateriaaleihin, opinnäytetyöohjeisiin, arviointikriteereihin ja tavoitteisiin. "
+            "Älä keksi organisaation sääntöjä. Jos kurssimateriaalia ei ole riittävästi, kerro arvioinnin rajallisuus. "
+            "Vastaa tiiviisti. Nosta esiin enintään kolme hyvin linjassa olevaa asiaa ja kolme mahdollista puutetta."
+        ),
+    },
+    "research_design": {
+        "label": "Tutkimusluotsi",
+        "tier": "strong",
+        "temperature": 0.3,
+        "system": (
+            "Olet Tutkimusluotsi. Arvioit tutkimuskysymyksen selkeyttä, aiheen rajausta, aineiston tai materiaalin "
+            "sopivuutta, menetelmän ja analyysitavan yhteensopivuutta, toteutettavuutta ja mahdollisia eettisiä kysymyksiä. "
+            "Älä tee lopullisia menetelmäpäätöksiä opiskelijan puolesta. "
+            "Vastaa tiiviisti. Keskity enintään kolmeen keskeiseen tarkennettavaan asiaan ja 2–3 ohjaajalta varmistettavaan kysymykseen."
+        ),
+    },
+    "reflection": {
+        "label": "Reflektiokumppani",
+        "tier": "fast",
+        "temperature": 0.4,
+        "system": (
+            "Olet Reflektiokumppani. Tuet opiskelijan itsesäätelyä, etenemisen arviointia, esteiden tunnistamista, "
+            "realistista suunnittelua ja seuraavan pienen askeleen valintaa. "
+            "Älä toista suunnitteluagentin tehtävää. "
+            "Vastaa tiiviisti. Anna yksi havainto, yksi mahdollinen este, yksi seuraava pieni askel ja yksi reflektiokysymys."
+        ),
+    },
+    "weekly_plan": {
+        "label": "Viikkovalmentaja",
+        "tier": "fast",
+        "temperature": 0.3,
+        "system": (
+            "Olet Viikkovalmentaja. Laadit realistisen seitsemän päivän suunnitelman opinnäytetyön etenemiseksi. "
+            "Suunnitelman tulee sisältää konkreettiset tehtävät, vähimmäistavoite, riskit ja mahdolliset ohjaajakysymykset. "
+            "Älä kirjoita opinnäytetyön sisältöä opiskelijan puolesta. "
+            "Vastaa tiiviisti ja käytä päiväkohtaista rakennetta."
+        ),
+    },
+    "supervision_summary": {
+        "label": "Ohjaustapaamisen valmistelija",
+        "tier": "fast",
+        "temperature": 0.3,
+        "system": (
+            "Olet Ohjaustapaamisen valmistelija. Laadit opiskelijalle tiiviin ja muokattavan muistion ohjaustapaamista varten. "
+            "Keskity nykyiseen tilanteeseen, etenemiseen, esteisiin, tarvittaviin päätöksiin, ohjaajalle esitettäviin kysymyksiin "
+            "ja seuraaviin askeleisiin. "
+            "Älä arvioi opiskelijaa summatiivisesti. Älä sisällytä tarpeettomia henkilötietoja. "
+            "Vastaa tiiviisti ja tee muistio helposti kopioitavaksi."
+        ),
+    },
+}
+
+
+# ============================================================
+# Mallivalinta ja progress-callback
+# ============================================================
 
 def model_for_agent(agent_name: str, override: Optional[str] = None) -> str:
     if override:
@@ -169,107 +285,37 @@ def model_for_agent(agent_name: str, override: Optional[str] = None) -> str:
     return DEFAULT_MODEL
 
 
-# ============================================================
-# Agenttimääritykset
-# ============================================================
+ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 
-AGENTS = {
-    "integrity": {
-        "label": "akateeminen rehellisyys",
-        "tier": "fast",
-        "temperature": 0.1,
-        "system": (
-            "Olet akateemisen rehellisyyden ja turvallisuuden agentti. "
-            "Tehtäväsi on arvioida, liittyykö opiskelijan pyyntöön tai tekstiin riskejä: "
-            "haamukirjoittaminen, plagiointi, keksityt lähteet, keksitty aineisto, "
-            "epäeettinen tutkimus, liian vahvat väitteet, ohjaajan päätöksenteon korvaaminen "
-            "tai luottamuksellisen tiedon käsittely. "
-            "Älä ole tarpeettoman varoittava, mutta merkitse riskit selkeästi. "
-            "Anna: riskitaso, keskeinen huoli, turvallinen tukitapa ja lyhyt rajausmuistutus."
-        ),
-    },
-    "planner": {
-        "label": "suunnittelu",
-        "tier": "fast",
-        "temperature": 0.3,
-        "system": (
-            "Olet opinnäytetyön suunnitteluagentti. "
-            "Auta opiskelijaa hahmottamaan nykyinen vaihe, seuraavat konkreettiset askeleet, "
-            "realistinen aikataulu, mahdolliset riskit ja ohjaajalle esitettävät kysymykset. "
-            "Tavoitteena on tukea opiskelijan omaa toimijuutta ja etenemistä."
-        ),
-    },
-    "writing_coach": {
-        "label": "kirjoituspalaute",
-        "tier": "strong",
-        "temperature": 0.3,
-        "system": (
-            "Olet akateemisen kirjoittamisen palauteagentti. "
-            "Anna formatiivista palautetta tekstin selkeydestä, rakenteesta, johdonmukaisuudesta, "
-            "argumentaatiosta, akateemisesta tyylistä, käsitteiden käytöstä ja evidenssin tarpeesta. "
-            "Älä kirjoita kokonaisia kappaleita opiskelijan puolesta. "
-            "Voit antaa lyhyitä havainnollistavia esimerkkejä, mutta opiskelijan tulee säilyä tekstin tekijänä."
-        ),
-    },
-    "criteria_alignment": {
-        "label": "kriteerivastaavuus",
-        "tier": "strong",
-        "temperature": 0.2,
-        "system": (
-            "Olet kriteerien ja ohjeiden vastaavuuden arvioija. "
-            "Vertaa opiskelijan suunnitelmaa, tekstiä tai tilannetta annettuihin kurssimateriaaleihin, "
-            "opinnäytetyöohjeisiin, arviointikriteereihin ja tavoitteisiin. "
-            "Älä keksi organisaation sääntöjä. "
-            "Jos kurssimateriaalia ei ole riittävästi, kerro arvioinnin rajallisuus selvästi."
-        ),
-    },
-    "research_design": {
-        "label": "tutkimusasetelma",
-        "tier": "strong",
-        "temperature": 0.3,
-        "system": (
-            "Olet tutkimusasetelman tukija. "
-            "Arvioi tutkimuskysymyksen selkeyttä, aiheen rajausta, aineiston tai materiaalin sopivuutta, "
-            "menetelmän ja analyysitavan yhteensopivuutta, toteutettavuutta ja mahdollisia eettisiä kysymyksiä. "
-            "Älä tee lopullisia menetelmäpäätöksiä opiskelijan puolesta. "
-            "Nosta esiin asiat, jotka kannattaa varmistaa ohjaajalta."
-        ),
-    },
-    "reflection": {
-        "label": "reflektio ja itsesäätely",
-        "tier": "fast",
-        "temperature": 0.4,
-        "system": (
-            "Olet reflektio- ja itsesäätelyagentti. "
-            "Tue opiskelijaa oman etenemisen arvioinnissa, esteiden tunnistamisessa, "
-            "realistisessa suunnittelussa, motivaation ylläpitämisessä ja seuraavan pienen askeleen valinnassa. "
-            "Ole käytännöllinen, rauhallinen ja tiivis."
-        ),
-    },
-    "weekly_plan": {
-        "label": "viikkosuunnitelma",
-        "tier": "fast",
-        "temperature": 0.3,
-        "system": (
-            "Olet viikkosuunnitelma-agentti. "
-            "Laadi realistinen seitsemän päivän suunnitelma opinnäytetyön etenemiseksi. "
-            "Suunnitelman tulee sisältää konkreettiset tehtävät, vähimmäistavoite, riskit ja mahdolliset ohjaajakysymykset. "
-            "Älä kirjoita opinnäytetyön sisältöä opiskelijan puolesta."
-        ),
-    },
-    "supervision_summary": {
-        "label": "ohjausmuistio",
-        "tier": "fast",
-        "temperature": 0.3,
-        "system": (
-            "Olet ohjaukseen valmistautumisen agentti. "
-            "Laadi opiskelijalle tiivis ja muokattava muistio ohjaustapaamista varten. "
-            "Keskity tilanteeseen, etenemiseen, esteisiin, tarvittaviin päätöksiin, ohjaajalle esittäviin kysymyksiin "
-            "ja seuraaviin askeleisiin. "
-            "Älä arvioi opiskelijaa summatiivisesti."
-        ),
-    },
-}
+
+def emit_progress(
+    callback: ProgressCallback,
+    event: str,
+    agent: str = None,
+    label: str = None,
+    status: str = "running",
+    message: str = "",
+    data: Any = None
+):
+    """
+    Lähettää app.py:lle päivityksen agenttisen työnkulun etenemisestä.
+    Varsinaista mallin piilevää päättelyketjua ei näytetä.
+    """
+
+    if callback is None:
+        return
+
+    try:
+        callback({
+            "event": event,
+            "agent": agent,
+            "label": label,
+            "status": status,
+            "message": message,
+            "data": data
+        })
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -277,13 +323,14 @@ AGENTS = {
 # ============================================================
 
 ORCHESTRATOR_SYSTEM = (
-    "Olet agenttisen opinnäytetyövalmentajan orkestroija-agentti. "
-    "Valitse, mitkä erikoistuneet agentit tarvitaan opiskelijan pyyntöön. "
+    "Olet Työnkulun ohjaaja agenttisessa opinnäytetyövalmentajassa. "
+    "Valitset, mitkä erikoisagentit tarvitaan opiskelijan pyyntöön. "
     "Palauta vain validia JSONia. JSON-avainten tulee olla englanniksi, mutta tekstiarvojen suomeksi. "
     "Käytettävissä olevat agentit ovat: integrity, planner, writing_coach, criteria_alignment, "
     "research_design, reflection, weekly_plan, supervision_summary. "
     "Valitse vain tarpeelliset agentit, jotta vastaus pysyy demossa nopeana. "
     "Sisällytä integrity, kun pyyntö liittyy kirjoittamiseen, tutkimukseen, aineistoon, lähteisiin tai opinnäytetyön sisältöön. "
+    "Jos tehtävä on pelkkä viikkosuunnitelma tai ohjausmuistio, integrity ei ole yleensä tarpeen. "
     "Palauta täsmälleen tämä rakenne: "
     "{\"task_analysis\":\"lyhyt analyysi\", "
     "\"agents\":[\"integrity\",\"planner\"], "
@@ -293,10 +340,10 @@ ORCHESTRATOR_SYSTEM = (
 
 
 FINALIZER_SYSTEM = (
-    "Olet lopullisen vastauksen koostaja agenttisessa opinnäytetyövalmentajassa. "
-    "Koosta erikoisagenttien tuotoksista yksi selkeä, opiskelijalle suunnattu vastaus. "
+    "Olet Vastauskoostaja agenttisessa opinnäytetyövalmentajassa. "
+    "Koostat erikoisagenttien tuotoksista yhden selkeän, opiskelijalle suunnatun vastauksen. "
     "Älä liitä agenttien tuotoksia sellaisenaan. Poista toisto ja ristiriidat. "
-    "Pidä vastaus käytännöllisenä ja pedagogisesti hyödyllisenä. "
+    "Pidä vastaus käytännöllisenä, pedagogisesti hyödyllisenä ja tiiviinä. "
     "Älä kirjoita opinnäytetyötä opiskelijan puolesta. "
     "Älä keksi lähteitä, aineistoja, tuloksia tai organisaation sääntöjä."
 )
@@ -322,10 +369,9 @@ def build_agent_prompt(agent_name: str, state: Dict[str, Any]) -> str:
         + trunc(state.get("recent_history", ""), 6000)
         + "\n\nViimeaikaiset viikkokatsaukset:\n"
         + safe_json(state.get("checkins", []))
-        + "\n\nAiemmat agenttituotokset tässä työnkulussa:\n"
-        + agent_outputs_text(state.get("agent_outputs", {}))
-        + "\n\nVastaa oman agenttiroolisi mukaisesti. "
-        + "Ole konkreettinen, tiivis ja pedagogisesti hyödyllinen."
+        + "\n\nHuomio: muut erikoisagentit käsittelevät omat näkökulmansa erikseen. "
+        + "Älä toista muiden agenttien tehtävää.\n\n"
+        + "Vastaa oman agenttiroolisi mukaisesti. Ole konkreettinen, tiivis ja pedagogisesti hyödyllinen."
     )
 
 
@@ -348,7 +394,12 @@ def build_finalizer_prompt(state: Dict[str, Any], route: Dict[str, Any]) -> str:
         + "## Riskit ja huomioitavat asiat\n\n"
         + "## Kysymykset ohjaajalle\n\n"
         + "## Reflektiokysymys\n\n"
-        + "Pidä vastaus demotilanteeseen sopivan selkeänä ja kohtuullisen tiiviinä."
+        + "## Valitse seuraavaksi yksi toimintalinja\n\n"
+        + "Pidä lopullinen vastaus tiiviinä: enintään noin 500–700 sanaa. "
+        + "Poista toisto agenttien väliltä. "
+        + "Anna aina 2–3 konkreettista kysymystä, jotka opiskelija voi viedä ohjaustapaamiseen. "
+        + "Lopeta kohtaan 'Valitse seuraavaksi yksi toimintalinja', jossa annat 2–3 vaihtoehtoa. "
+        + "Älä tee päätöstä opiskelijan puolesta."
     )
 
 
@@ -410,7 +461,6 @@ def normalize_agents(agent_names: List[str], task_type: str) -> List[str]:
     if not cleaned:
         cleaned = fallback_agents_for_task(task_type)
 
-    # Akateemisen rehellisyyden agentti mukaan tilanteisiin, joissa käsitellään sisältöä.
     needs_integrity = task_type in [
         "proactive_coach",
         "draft_feedback",
@@ -423,7 +473,6 @@ def normalize_agents(agent_names: List[str], task_type: str) -> List[str]:
     limit = max_agents_for_task(task_type)
     cleaned = cleaned[:limit]
 
-    # Varmistetaan vielä, ettei integrity putoa pois tärkeissä tehtävissä.
     if needs_integrity and "integrity" not in cleaned:
         cleaned = ["integrity"] + cleaned
         cleaned = cleaned[:limit]
@@ -442,7 +491,8 @@ def run_agentic_workflow(
     course_context: str = "",
     recent_history: str = "",
     checkins: Optional[List[Dict[str, Any]]] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    progress_callback: ProgressCallback = None
 ) -> Dict[str, Any]:
     """
     Ajaa agenttisen työnkulun.
@@ -469,7 +519,17 @@ def run_agentic_workflow(
         "agent_outputs": {},
     }
 
-    # 1. Orkestroija
+    emit_progress(
+        progress_callback,
+        event="workflow_start",
+        status="running",
+        message="Agenttinen työnkulku käynnistyy."
+    )
+
+    # --------------------------------------------------------
+    # 1. Työnkulun ohjaaja
+    # --------------------------------------------------------
+
     orchestrator_prompt = (
         "Tehtävätyyppi:\n"
         + str(task_type)
@@ -484,6 +544,15 @@ def run_agentic_workflow(
         + "\n\nValitse tarvittavat agentit. Pidä reititys demotilanteessa tehokkaana."
     )
 
+    emit_progress(
+        progress_callback,
+        event="orchestrator_start",
+        agent="orchestrator",
+        label="Työnkulun ohjaaja",
+        status="running",
+        message="Työnkulun ohjaaja analysoi pyynnön ja valitsee tarvittavat agentit."
+    )
+
     route_raw = call_llm(
         ORCHESTRATOR_SYSTEM,
         orchestrator_prompt,
@@ -495,7 +564,7 @@ def run_agentic_workflow(
 
     if not route:
         route = {
-            "task_analysis": "Orkestroijan JSON-vastausta ei voitu jäsentää. Käytetään oletusreititystä.",
+            "task_analysis": "Työnkulun ohjaajan JSON-vastausta ei voitu jäsentää. Käytetään oletusreititystä.",
             "agents": fallback_agents_for_task(task_type),
             "reason": "Oletusreititys tehtävätyypin perusteella.",
             "expected_final_response": "Anna opiskelijalle käytännöllistä opinnäytetyön tukea."
@@ -503,10 +572,48 @@ def run_agentic_workflow(
 
     selected_agents = normalize_agents(route.get("agents", []), task_type)
 
-    # 2. Erikoisagentit
+    selected_labels = []
+
     for agent_name in selected_agents:
+        selected_labels.append(
+            AGENTS.get(agent_name, {}).get("label", agent_name)
+        )
+
+    emit_progress(
+        progress_callback,
+        event="route_complete",
+        agent="orchestrator",
+        label="Työnkulun ohjaaja",
+        status="complete",
+        message="Työnkulun ohjaaja valitsi agentit: " + ", ".join(selected_labels),
+        data={
+            "route": route,
+            "selected_agents": selected_agents,
+            "selected_labels": selected_labels
+        }
+    )
+
+    # --------------------------------------------------------
+    # 2. Erikoisagentit rinnakkain
+    # --------------------------------------------------------
+
+    def run_single_agent(agent_name: str) -> tuple:
         config = AGENTS[agent_name]
-        prompt = build_agent_prompt(agent_name, state)
+        agent_label_value = config.get("label", agent_name)
+
+        emit_progress(
+            progress_callback,
+            event="agent_start",
+            agent=agent_name,
+            label=agent_label_value,
+            status="running",
+            message="Agentti työskentelee: " + agent_label_value
+        )
+
+        local_state = dict(state)
+        local_state["agent_outputs"] = {}
+
+        prompt = build_agent_prompt(agent_name, local_state)
 
         output = call_llm(
             config["system"],
@@ -515,9 +622,47 @@ def run_agentic_workflow(
             temperature=config.get("temperature", 0.3)
         )
 
-        state["agent_outputs"][agent_name] = output
+        emit_progress(
+            progress_callback,
+            event="agent_complete",
+            agent=agent_name,
+            label=agent_label_value,
+            status="complete",
+            message="Agentti valmis: " + agent_label_value,
+            data={
+                "output_preview": trunc(output, 600),
+                "output": output
+            }
+        )
 
-    # 3. Lopullinen koostaja
+        return agent_name, output
+
+    if selected_agents:
+        max_workers = min(len(selected_agents), 4)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(run_single_agent, agent_name)
+                for agent_name in selected_agents
+            ]
+
+            for future in as_completed(futures):
+                agent_name, output = future.result()
+                state["agent_outputs"][agent_name] = output
+
+    # --------------------------------------------------------
+    # 3. Vastauskoostaja
+    # --------------------------------------------------------
+
+    emit_progress(
+        progress_callback,
+        event="finalizer_start",
+        agent="finalizer",
+        label="Vastauskoostaja",
+        status="running",
+        message="Vastauskoostaja yhdistää agenttien tuotokset lopulliseksi vastaukseksi."
+    )
+
     final_prompt = build_finalizer_prompt(state, route)
 
     final_response = call_llm(
@@ -525,6 +670,22 @@ def run_agentic_workflow(
         final_prompt,
         model_for_agent("writing_coach", model),
         temperature=0.3
+    )
+
+    emit_progress(
+        progress_callback,
+        event="finalizer_complete",
+        agent="finalizer",
+        label="Vastauskoostaja",
+        status="complete",
+        message="Lopullinen vastaus on valmis."
+    )
+
+    emit_progress(
+        progress_callback,
+        event="workflow_complete",
+        status="complete",
+        message="Agenttinen työnkulku valmis."
     )
 
     return {
@@ -552,7 +713,7 @@ def format_workflow_debug(result: Dict[str, Any]) -> str:
         + "- Nopea malli: `" + str(FAST_MODEL) + "`\n"
         + "- Vahva malli: `" + str(STRONG_MODEL) + "`\n"
         + "- Oletusmalli: `" + str(DEFAULT_MODEL) + "`\n\n"
-        + "## Orkestroijan reitti\n\n"
+        + "## Työnkulun ohjaajan reitti\n\n"
         + "```json\n"
         + safe_json(result.get("route", {}))
         + "\n```\n\n"
