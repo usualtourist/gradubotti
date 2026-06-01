@@ -532,7 +532,7 @@ def reset_demo_user(user_id: str):
 # Otsikko ja kuvaus
 # ============================================================
 
-st.title("Agenttinen tekoäly opinnäytetyön tueksi")
+st.title("Demo AI-työkalusta opinnäytetyön tueksi")
 
 st.caption(
     "Pilvipohjainen Streamlit-prototyyppi, jossa työnkulun ohjaaja ja erikoistuneet agentit "
