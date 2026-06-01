@@ -55,7 +55,7 @@ except Exception:
 # ============================================================
 
 st.set_page_config(
-    page_title="Agenttinen opinnäytetyövalmentaja",
+    page_title="AI-opinnäytetyövalmentaja",
     page_icon="🎓",
     layout="wide"
 )
